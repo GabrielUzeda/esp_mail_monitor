@@ -67,95 +67,7 @@ EmailAccount* contaAtual = nullptr;
 // Lista de UIDs encontradas na busca para buscar o corpo depois
 std::vector<int> uidsParaBuscar;
 
-// ===================== Gemini API =====================
-const char* GEMINI_API_KEY = SECRET_GEMINI_API_KEY;
-
-String uploadToGemini(const char* filePath) {
-  File file = LittleFS.open(filePath, "r");
-  if (!file) {
-    Serial.printf("Falha ao abrir o arquivo %s para upload\n", filePath);
-    return "";
-  }
-  
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  String url = String("https://generativelanguage.googleapis.com/upload/v1beta/files?key=") + GEMINI_API_KEY;
-  if (!http.begin(client, url)) {
-    Serial.println("Falha ao iniciar HTTPClient para Gemini Upload");
-    file.close();
-    return "";
-  }
-  http.setTimeout(25000); // 25s para o upload
-
-
-  http.addHeader("X-Goog-Upload-Protocol", "raw");
-  http.addHeader("X-Goog-Upload-Command", "upload, finalize");
-  http.addHeader("X-Goog-Upload-Header-Content-Type", "text/plain");
-  http.addHeader("Content-Type", "text/plain");
-
-  int code = http.sendRequest("POST", &file, file.size());
-  String result = http.getString();
-  http.end();
-  file.close();
-  client.stop();
-
-  if (code == 200) {
-    DynamicJsonDocument doc(1024);
-    deserializeJson(doc, result);
-    if (doc["file"]["name"]) {
-      return doc["file"]["name"].as<String>();
-    }
-  }
-  Serial.printf("Erro Upload Gemini (%d): %s\n", code, result.c_str());
-  return "";
-}
-
-String askGemini(String fileName, String promptText) {
-  WiFiClientSecure client;
-  client.setInsecure();
-  client.setTimeout(20000);
-  HTTPClient http;
-  String url = String("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=") + GEMINI_API_KEY;
-  if (!http.begin(client, url)) return "Erro HTTPS";
-  http.setTimeout(20000); // 20s de timeout seguro contra o Watchdog (WDT)
-
-
-  http.addHeader("Content-Type", "application/json");
-
-  String fullUri = "https://generativelanguage.googleapis.com/v1beta/" + fileName;
-  String payload = "{\"contents\":[{\"parts\":[{\"fileData\":{\"mimeType\":\"text/plain\",\"fileUri\":\"" + fullUri + "\"}},{\"text\":\"" + promptText + "\"}]}]}";
-  
-  int code = http.POST(payload);
-  String result = http.getString();
-  http.end();
-  client.stop();
-
-  if (code == 200) {
-    DynamicJsonDocument doc(2048);
-    deserializeJson(doc, result);
-    return doc["candidates"][0]["content"]["parts"][0]["text"].as<String>();
-  }
-  Serial.printf("Erro Analise Gemini (%d): %s\n", code, result.c_str());
-  return "Erro ao resumir o email.";
-}
-
-void deleteFromGemini(String fileName) {
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  
-  String url = String("https://generativelanguage.googleapis.com/v1beta/") + fileName + "?key=" + GEMINI_API_KEY;
-  if (http.begin(client, url)) {
-    http.sendRequest("DELETE");
-    http.end();
-  }
-  client.stop();
-}
-
-
-
-// ===================== Telegram: Envio via HTTPS (POST + JSON) =====================
+// ===================== JSON Helper =====================
 // Escapa os caracteres críticos para o Payload ser aceito no formato JSON sem erros
 String escaparJson(const String &input) {
   String saida;
@@ -163,7 +75,7 @@ String escaparJson(const String &input) {
   for (size_t i = 0; i < input.length(); i++) {
     char c = input.charAt(i);
     switch (c) {
-      case '"':  saida += "\\\""; break;
+      case '"':  saida += "\""; break;
       case '\\': saida += "\\\\"; break;
       case '\n': saida += "\\n";  break;
       case '\r': break; 
@@ -173,6 +85,62 @@ String escaparJson(const String &input) {
   return saida;
 }
 
+// ===================== Gemini API =====================
+const char* GEMINI_API_KEY = SECRET_GEMINI_API_KEY;
+
+String askGemini(String textoEmail, bool foiTruncado = false) {
+  if (textoEmail.length() == 0) return "_E-mail sem conteúdo legível._";
+
+  // Limita o tamanho do texto enviado ao Gemini para economizar RAM e payload
+  if (textoEmail.length() > 6000) {
+    textoEmail = textoEmail.substring(0, 6000) + F("\n[...texto truncado]");
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setTimeout(20000);
+  HTTPClient http;
+  String url = String("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=") + GEMINI_API_KEY;
+  if (!http.begin(client, url)) {
+    Serial.println(F("Falha ao iniciar HTTPClient para Gemini"));
+    registrarErro("Falha ao conectar no Gemini HTTPS");
+    return "_Erro ao conectar ao Gemini_";
+  }
+  http.setTimeout(20000); // 20s de timeout seguro contra o Watchdog (WDT)
+
+  http.addHeader("Content-Type", "application/json");
+
+  String prompt;
+  if (foiTruncado) {
+    prompt = "O e-mail a seguir é longo e foi truncado por limitações de memória do microcontrolador. Resuma as informações principais presentes neste trecho inicial de forma breve e clara em português (destacando datas, prazos ou solicitações, se houver):\n\nConteúdo do e-mail:\n" + textoEmail;
+  } else {
+    prompt = "Resuma o conteúdo deste e-mail de forma breve e objetiva, extraindo apenas as informações mais importantes (como datas, horários, convocações ou ações necessárias). Responda em português de forma clara.\n\nConteúdo do e-mail:\n" + textoEmail;
+  }
+
+  String payload;
+  payload.reserve(prompt.length() + 128);
+  payload += "{\"contents\":[{\"parts\":[{\"text\":\"";
+  payload += escaparJson(prompt);
+  payload += "\"}]}]}";
+
+  int code = http.POST(payload);
+  String result = http.getString();
+  http.end();
+  client.stop();
+
+  if (code == 200) {
+    DynamicJsonDocument doc(4096);
+    DeserializationError err = deserializeJson(doc, result);
+    if (!err && doc["candidates"][0]["content"]["parts"][0]["text"]) {
+      return doc["candidates"][0]["content"]["parts"][0]["text"].as<String>();
+    }
+  }
+  Serial.printf("Erro Analise Gemini (%d): %s\n", code, result.c_str());
+  registrarErro("Gemini API HTTP " + String(code));
+  return "_Erro ao resumir o email com IA._";
+}
+
+// ===================== Telegram: Envio via HTTPS (POST + JSON) =====================
 void enviarParaTelegram(String texto) {
   // O Telegram recusa textos acima de 4096 caracteres
   if (texto.length() > 4000) {
@@ -422,40 +390,30 @@ void imapCallback(IMAP_Status status) {
       continue;
     }
 
-    String assunto = msg.subject;
-    String remetente = msg.from;
+    String assunto = (msg.subject && strlen(msg.subject) > 0) ? msg.subject : "(Sem Assunto)";
+    String remetente = (msg.from && strlen(msg.from) > 0) ? msg.from : "(Remetente Desconhecido)";
 
-    if (!contemPalavraBloqueada(assunto, assunto)) { // Checa só o assunto rápido
-      String arquivoEmail = "/email_" + String(msg.UID) + ".txt";
+    // Extrai o corpo do e-mail: prioriza texto plano; se não houver (comum em comunicados/newsletters), usa HTML
+    String corpoBruto = "";
+    if (msg.text.content && strlen(msg.text.content) > 0) {
+      corpoBruto = msg.text.content;
+    } else if (msg.html.content && strlen(msg.html.content) > 0) {
+      corpoBruto = msg.html.content;
+    }
+
+    bool emailTruncado = (corpoBruto.length() >= 24000);
+
+    String corpoLimpo = stripHTML(corpoBruto);
+    if (corpoLimpo.length() > 6000) {
+      emailTruncado = true;
+    }
+
+    if (!contemPalavraBloqueada(assunto, corpoLimpo)) {
       String resumoGemini = "_Nenhum conteúdo baixado_";
 
-      if (msg.text.content && strlen(msg.text.content) > 0) {
-        String corpoLimpo = stripHTML(String(msg.text.content));
-        File f = LittleFS.open(arquivoEmail, "w");
-        if (f) {
-           f.print(corpoLimpo);
-           f.close();
-           Serial.println("Corpo do e-mail salvo na Flash com sucesso!");
-        } else {
-           Serial.println("Erro ao salvar no LittleFS!");
-        }
-      }
-
-      if (LittleFS.exists(arquivoEmail)) {
-         Serial.println("Arquivo de e-mail encontrado. Iniciando Upload para o Gemini...");
-         String fileName = uploadToGemini(arquivoEmail.c_str());
-         if (fileName != "") {
-             Serial.println("Upload concluído! Solicitando resumo ao Gemini...");
-             String prompt = "Resuma o conteúdo deste e-mail de forma breve e objetiva, extraindo apenas as informações mais importantes. Responda em português de forma clara.";
-             resumoGemini = askGemini(fileName, prompt);
-             deleteFromGemini(fileName);
-             Serial.println("Arquivo deletado do Gemini.");
-         } else {
-             resumoGemini = "_Erro ao enviar arquivo para o Gemini_";
-             registrarErro("Erro ao enviar arquivo para o Gemini");
-         }
-         LittleFS.remove(arquivoEmail); // Fase 5: Faxina Local
-         Serial.println("Arquivo deletado do ESP32 (LittleFS).");
+      if (corpoLimpo.length() > 0) {
+        Serial.println("Solicitando resumo ao Gemini...");
+        resumoGemini = askGemini(corpoLimpo, emailTruncado);
       }
 
       String mensagem = "📧 *Novo e-mail (Resumido por IA)!*\n";
@@ -463,6 +421,10 @@ void imapCallback(IMAP_Status status) {
       mensagem += "De: " + remetente + "\n";
       mensagem += "Assunto: " + assunto + "\n\n";
       mensagem += "🤖 *Resumo Gemini:*\n" + resumoGemini;
+
+      if (emailTruncado) {
+        mensagem += "\n\n⚠️ _*Aviso:* O e-mail excedeu os limites de memória do ESP32 e foi truncado. Recomenda-se abrir o link abaixo para visualizar a mensagem completa na íntegra._";
+      }
 
       // Adiciona link direto para abrir no Gmail
       if (msg.ID && strlen(msg.ID) > 0) {
@@ -590,15 +552,15 @@ bool verificarContaEmail(EmailAccount &conta) {
       imap_data.storage.type = esp_mail_file_storage_type_none;
       imap_data.fetch.set_seen      = false; // Garante que não marcará como lido no fetch
       imap_data.download.header     = true;
-      imap_data.download.text       = true;  // Baixa só o texto plano
-      imap_data.download.html       = false; // Ignora HTML
+      imap_data.download.text       = true;  // Baixa texto plano
+      imap_data.download.html       = true;  // Baixa HTML caso não haja texto plano
       imap_data.download.attachment = false; // Ignora anexos grandes
       imap_data.download.inlineImg  = false;
 
       // Habilita recebimento do corpo na RAM
       imap_data.enable.text         = true;
-      imap_data.enable.html         = false;
-      imap_data.limit.msg_size      = 50000; // Limita o e-mail em 50KB para não estourar a RAM!
+      imap_data.enable.html         = true;
+      imap_data.limit.msg_size      = 25000; // Limite conservador de 25KB para garantir folga total na RAM!
 
       // Executa o Fetch (callback processará o corpo na RAM)
       MailClient.readMail(&imap, false);
@@ -704,7 +666,10 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
       client.setTimeout(15000);
 
       HTTPClient http;
-      http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+      // IMPORTANTE: Desativa o redirecionamento automático interno do HTTPClient.
+      // O HTTPClient do ESP32 reutiliza o mesmo socket TLS para domínios diferentes,
+      // causando erro 404 ao pular de script.google.com para script.googleusercontent.com.
+      http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
 
       if (http.begin(client, currentUrl)) {
         http.setTimeout(25000);
@@ -719,7 +684,7 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
             http.end();
             client.stop();
             return 200;
-          } else if (statusAttempt == 301 || statusAttempt == 302 || statusAttempt == 307 || statusAttempt == 308) {
+          } else if (statusAttempt == 301 || statusAttempt == 302 || statusAttempt == 303 || statusAttempt == 307 || statusAttempt == 308) {
             String loc = http.header("Location");
             if (loc.length() == 0) loc = http.header("location");
             if (loc.length() == 0) loc = http.getLocation();
@@ -742,8 +707,8 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
           http.end();
           client.stop();
 
-          // Se obteve código HTTP válido sem ser 404/5xx nem redirect, encerra tentativas
-          if (statusAttempt != 301 && statusAttempt != 302 && statusAttempt != 307 && statusAttempt != 308 && statusAttempt != -1 && statusAttempt != 404) {
+          // Se for redirect válido (30x), avança para o próximo passo imediatamente
+          if (statusAttempt == 301 || statusAttempt == 302 || statusAttempt == 303 || statusAttempt == 307 || statusAttempt == 308) {
             break;
           }
         } else {
@@ -758,10 +723,10 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
     }
 
     finalStatus = statusAttempt;
-    if (finalStatus != 301 && finalStatus != 302 && finalStatus != 307 && finalStatus != 308) {
+    if (finalStatus != 301 && finalStatus != 302 && finalStatus != 303 && finalStatus != 307 && finalStatus != 308) {
       break;
     }
-    delay(1000);
+    delay(500);
   }
 
   return finalStatus;
@@ -1071,6 +1036,14 @@ void setup() {
   // Inicializa o LittleFS e formata caso esteja corrompido/desformatado
   if (!LittleFS.begin(true)) {
     Serial.println(F("Erro ao iniciar/formatar LittleFS"));
+  } else {
+    if (!LittleFS.exists("/tze.txt")) {
+      File tze = LittleFS.open("/tze.txt", "w");
+      if (tze) {
+        tze.print("<-03>3");
+        tze.close();
+      }
+    }
   }
 
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -1144,8 +1117,8 @@ void loop() {
   }
 
   // Ressincronização diária do NTP para prevenir desvios (drift) no relógio
-  static unsigned long tempoAnteriorNTP = 0;
-  if (tempoAtual - tempoAnteriorNTP >= 86400000 || tempoAnteriorNTP == 0) {
+  static unsigned long tempoAnteriorNTP = millis();
+  if (tempoAtual - tempoAnteriorNTP >= 86400000) {
     tempoAnteriorNTP = tempoAtual;
     configTime(-3 * 3600, 0, "pool.ntp.org", "time.nist.gov");
     Serial.println(F("Ressincronizando horário NTP..."));
