@@ -704,7 +704,10 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
       client.setTimeout(15000);
 
       HTTPClient http;
-      http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+      // IMPORTANTE: Desativa o redirecionamento automático interno do HTTPClient.
+      // O HTTPClient do ESP32 reutiliza o mesmo socket TLS para domínios diferentes,
+      // causando erro 404 ao pular de script.google.com para script.googleusercontent.com.
+      http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
 
       if (http.begin(client, currentUrl)) {
         http.setTimeout(25000);
@@ -719,7 +722,7 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
             http.end();
             client.stop();
             return 200;
-          } else if (statusAttempt == 301 || statusAttempt == 302 || statusAttempt == 307 || statusAttempt == 308) {
+          } else if (statusAttempt == 301 || statusAttempt == 302 || statusAttempt == 303 || statusAttempt == 307 || statusAttempt == 308) {
             String loc = http.header("Location");
             if (loc.length() == 0) loc = http.header("location");
             if (loc.length() == 0) loc = http.getLocation();
@@ -742,8 +745,8 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
           http.end();
           client.stop();
 
-          // Se obteve código HTTP válido sem ser 404/5xx nem redirect, encerra tentativas
-          if (statusAttempt != 301 && statusAttempt != 302 && statusAttempt != 307 && statusAttempt != 308 && statusAttempt != -1 && statusAttempt != 404) {
+          // Se for redirect válido (30x), avança para o próximo passo imediatamente
+          if (statusAttempt == 301 || statusAttempt == 302 || statusAttempt == 303 || statusAttempt == 307 || statusAttempt == 308) {
             break;
           }
         } else {
@@ -758,10 +761,10 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
     }
 
     finalStatus = statusAttempt;
-    if (finalStatus != 301 && finalStatus != 302 && finalStatus != 307 && finalStatus != 308) {
+    if (finalStatus != 301 && finalStatus != 302 && finalStatus != 303 && finalStatus != 307 && finalStatus != 308) {
       break;
     }
-    delay(1000);
+    delay(500);
   }
 
   return finalStatus;
