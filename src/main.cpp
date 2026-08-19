@@ -67,95 +67,7 @@ EmailAccount* contaAtual = nullptr;
 // Lista de UIDs encontradas na busca para buscar o corpo depois
 std::vector<int> uidsParaBuscar;
 
-// ===================== Gemini API =====================
-const char* GEMINI_API_KEY = SECRET_GEMINI_API_KEY;
-
-String uploadToGemini(const char* filePath) {
-  File file = LittleFS.open(filePath, "r");
-  if (!file) {
-    Serial.printf("Falha ao abrir o arquivo %s para upload\n", filePath);
-    return "";
-  }
-  
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  String url = String("https://generativelanguage.googleapis.com/upload/v1beta/files?key=") + GEMINI_API_KEY;
-  if (!http.begin(client, url)) {
-    Serial.println("Falha ao iniciar HTTPClient para Gemini Upload");
-    file.close();
-    return "";
-  }
-  http.setTimeout(25000); // 25s para o upload
-
-
-  http.addHeader("X-Goog-Upload-Protocol", "raw");
-  http.addHeader("X-Goog-Upload-Command", "upload, finalize");
-  http.addHeader("X-Goog-Upload-Header-Content-Type", "text/plain");
-  http.addHeader("Content-Type", "text/plain");
-
-  int code = http.sendRequest("POST", &file, file.size());
-  String result = http.getString();
-  http.end();
-  file.close();
-  client.stop();
-
-  if (code == 200) {
-    DynamicJsonDocument doc(1024);
-    deserializeJson(doc, result);
-    if (doc["file"]["name"]) {
-      return doc["file"]["name"].as<String>();
-    }
-  }
-  Serial.printf("Erro Upload Gemini (%d): %s\n", code, result.c_str());
-  return "";
-}
-
-String askGemini(String fileName, String promptText) {
-  WiFiClientSecure client;
-  client.setInsecure();
-  client.setTimeout(20000);
-  HTTPClient http;
-  String url = String("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=") + GEMINI_API_KEY;
-  if (!http.begin(client, url)) return "Erro HTTPS";
-  http.setTimeout(20000); // 20s de timeout seguro contra o Watchdog (WDT)
-
-
-  http.addHeader("Content-Type", "application/json");
-
-  String fullUri = "https://generativelanguage.googleapis.com/v1beta/" + fileName;
-  String payload = "{\"contents\":[{\"parts\":[{\"fileData\":{\"mimeType\":\"text/plain\",\"fileUri\":\"" + fullUri + "\"}},{\"text\":\"" + promptText + "\"}]}]}";
-  
-  int code = http.POST(payload);
-  String result = http.getString();
-  http.end();
-  client.stop();
-
-  if (code == 200) {
-    DynamicJsonDocument doc(2048);
-    deserializeJson(doc, result);
-    return doc["candidates"][0]["content"]["parts"][0]["text"].as<String>();
-  }
-  Serial.printf("Erro Analise Gemini (%d): %s\n", code, result.c_str());
-  return "Erro ao resumir o email.";
-}
-
-void deleteFromGemini(String fileName) {
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  
-  String url = String("https://generativelanguage.googleapis.com/v1beta/") + fileName + "?key=" + GEMINI_API_KEY;
-  if (http.begin(client, url)) {
-    http.sendRequest("DELETE");
-    http.end();
-  }
-  client.stop();
-}
-
-
-
-// ===================== Telegram: Envio via HTTPS (POST + JSON) =====================
+// ===================== JSON Helper =====================
 // Escapa os caracteres críticos para o Payload ser aceito no formato JSON sem erros
 String escaparJson(const String &input) {
   String saida;
@@ -163,7 +75,7 @@ String escaparJson(const String &input) {
   for (size_t i = 0; i < input.length(); i++) {
     char c = input.charAt(i);
     switch (c) {
-      case '"':  saida += "\\\""; break;
+      case '"':  saida += "\""; break;
       case '\\': saida += "\\\\"; break;
       case '\n': saida += "\\n";  break;
       case '\r': break; 
@@ -173,6 +85,62 @@ String escaparJson(const String &input) {
   return saida;
 }
 
+// ===================== Gemini API =====================
+const char* GEMINI_API_KEY = SECRET_GEMINI_API_KEY;
+
+String askGemini(String textoEmail, bool foiTruncado = false) {
+  if (textoEmail.length() == 0) return "_E-mail sem conteúdo legível._";
+
+  // Limita o tamanho do texto enviado ao Gemini para economizar RAM e payload
+  if (textoEmail.length() > 6000) {
+    textoEmail = textoEmail.substring(0, 6000) + F("\n[...texto truncado]");
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setTimeout(20000);
+  HTTPClient http;
+  String url = String("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=") + GEMINI_API_KEY;
+  if (!http.begin(client, url)) {
+    Serial.println(F("Falha ao iniciar HTTPClient para Gemini"));
+    registrarErro("Falha ao conectar no Gemini HTTPS");
+    return "_Erro ao conectar ao Gemini_";
+  }
+  http.setTimeout(20000); // 20s de timeout seguro contra o Watchdog (WDT)
+
+  http.addHeader("Content-Type", "application/json");
+
+  String prompt;
+  if (foiTruncado) {
+    prompt = "O e-mail a seguir é longo e foi truncado por limitações de memória do microcontrolador. Resuma as informações principais presentes neste trecho inicial de forma breve e clara em português (destacando datas, prazos ou solicitações, se houver):\n\nConteúdo do e-mail:\n" + textoEmail;
+  } else {
+    prompt = "Resuma o conteúdo deste e-mail de forma breve e objetiva, extraindo apenas as informações mais importantes (como datas, horários, convocações ou ações necessárias). Responda em português de forma clara.\n\nConteúdo do e-mail:\n" + textoEmail;
+  }
+
+  String payload;
+  payload.reserve(prompt.length() + 128);
+  payload += "{\"contents\":[{\"parts\":[{\"text\":\"";
+  payload += escaparJson(prompt);
+  payload += "\"}]}]}";
+
+  int code = http.POST(payload);
+  String result = http.getString();
+  http.end();
+  client.stop();
+
+  if (code == 200) {
+    DynamicJsonDocument doc(4096);
+    DeserializationError err = deserializeJson(doc, result);
+    if (!err && doc["candidates"][0]["content"]["parts"][0]["text"]) {
+      return doc["candidates"][0]["content"]["parts"][0]["text"].as<String>();
+    }
+  }
+  Serial.printf("Erro Analise Gemini (%d): %s\n", code, result.c_str());
+  registrarErro("Gemini API HTTP " + String(code));
+  return "_Erro ao resumir o email com IA._";
+}
+
+// ===================== Telegram: Envio via HTTPS (POST + JSON) =====================
 void enviarParaTelegram(String texto) {
   // O Telegram recusa textos acima de 4096 caracteres
   if (texto.length() > 4000) {
