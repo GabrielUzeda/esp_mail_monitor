@@ -1,0 +1,25 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+.clang_complete
+.gcc-flags.json
+
+# IDEs & Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Backups and Logs
+*.bak
+*.log
+esp32_backup.bin
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+env/
