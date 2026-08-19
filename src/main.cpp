@@ -1036,6 +1036,14 @@ void setup() {
   // Inicializa o LittleFS e formata caso esteja corrompido/desformatado
   if (!LittleFS.begin(true)) {
     Serial.println(F("Erro ao iniciar/formatar LittleFS"));
+  } else {
+    if (!LittleFS.exists("/tze.txt")) {
+      File tze = LittleFS.open("/tze.txt", "w");
+      if (tze) {
+        tze.print("<-03>3");
+        tze.close();
+      }
+    }
   }
 
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -1109,8 +1117,8 @@ void loop() {
   }
 
   // Ressincronização diária do NTP para prevenir desvios (drift) no relógio
-  static unsigned long tempoAnteriorNTP = 0;
-  if (tempoAtual - tempoAnteriorNTP >= 86400000 || tempoAnteriorNTP == 0) {
+  static unsigned long tempoAnteriorNTP = millis();
+  if (tempoAtual - tempoAnteriorNTP >= 86400000) {
     tempoAnteriorNTP = tempoAtual;
     configTime(-3 * 3600, 0, "pool.ntp.org", "time.nist.gov");
     Serial.println(F("Ressincronizando horário NTP..."));
