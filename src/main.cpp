@@ -390,40 +390,30 @@ void imapCallback(IMAP_Status status) {
       continue;
     }
 
-    String assunto = msg.subject;
-    String remetente = msg.from;
+    String assunto = (msg.subject && strlen(msg.subject) > 0) ? msg.subject : "(Sem Assunto)";
+    String remetente = (msg.from && strlen(msg.from) > 0) ? msg.from : "(Remetente Desconhecido)";
 
-    if (!contemPalavraBloqueada(assunto, assunto)) { // Checa só o assunto rápido
-      String arquivoEmail = "/email_" + String(msg.UID) + ".txt";
+    // Extrai o corpo do e-mail: prioriza texto plano; se não houver (comum em comunicados/newsletters), usa HTML
+    String corpoBruto = "";
+    if (msg.text.content && strlen(msg.text.content) > 0) {
+      corpoBruto = msg.text.content;
+    } else if (msg.html.content && strlen(msg.html.content) > 0) {
+      corpoBruto = msg.html.content;
+    }
+
+    bool emailTruncado = (corpoBruto.length() >= 24000);
+
+    String corpoLimpo = stripHTML(corpoBruto);
+    if (corpoLimpo.length() > 6000) {
+      emailTruncado = true;
+    }
+
+    if (!contemPalavraBloqueada(assunto, corpoLimpo)) {
       String resumoGemini = "_Nenhum conteúdo baixado_";
 
-      if (msg.text.content && strlen(msg.text.content) > 0) {
-        String corpoLimpo = stripHTML(String(msg.text.content));
-        File f = LittleFS.open(arquivoEmail, "w");
-        if (f) {
-           f.print(corpoLimpo);
-           f.close();
-           Serial.println("Corpo do e-mail salvo na Flash com sucesso!");
-        } else {
-           Serial.println("Erro ao salvar no LittleFS!");
-        }
-      }
-
-      if (LittleFS.exists(arquivoEmail)) {
-         Serial.println("Arquivo de e-mail encontrado. Iniciando Upload para o Gemini...");
-         String fileName = uploadToGemini(arquivoEmail.c_str());
-         if (fileName != "") {
-             Serial.println("Upload concluído! Solicitando resumo ao Gemini...");
-             String prompt = "Resuma o conteúdo deste e-mail de forma breve e objetiva, extraindo apenas as informações mais importantes. Responda em português de forma clara.";
-             resumoGemini = askGemini(fileName, prompt);
-             deleteFromGemini(fileName);
-             Serial.println("Arquivo deletado do Gemini.");
-         } else {
-             resumoGemini = "_Erro ao enviar arquivo para o Gemini_";
-             registrarErro("Erro ao enviar arquivo para o Gemini");
-         }
-         LittleFS.remove(arquivoEmail); // Fase 5: Faxina Local
-         Serial.println("Arquivo deletado do ESP32 (LittleFS).");
+      if (corpoLimpo.length() > 0) {
+        Serial.println("Solicitando resumo ao Gemini...");
+        resumoGemini = askGemini(corpoLimpo, emailTruncado);
       }
 
       String mensagem = "📧 *Novo e-mail (Resumido por IA)!*\n";
@@ -431,6 +421,10 @@ void imapCallback(IMAP_Status status) {
       mensagem += "De: " + remetente + "\n";
       mensagem += "Assunto: " + assunto + "\n\n";
       mensagem += "🤖 *Resumo Gemini:*\n" + resumoGemini;
+
+      if (emailTruncado) {
+        mensagem += "\n\n⚠️ _*Aviso:* O e-mail excedeu os limites de memória do ESP32 e foi truncado. Recomenda-se abrir o link abaixo para visualizar a mensagem completa na íntegra._";
+      }
 
       // Adiciona link direto para abrir no Gmail
       if (msg.ID && strlen(msg.ID) > 0) {
@@ -558,15 +552,15 @@ bool verificarContaEmail(EmailAccount &conta) {
       imap_data.storage.type = esp_mail_file_storage_type_none;
       imap_data.fetch.set_seen      = false; // Garante que não marcará como lido no fetch
       imap_data.download.header     = true;
-      imap_data.download.text       = true;  // Baixa só o texto plano
-      imap_data.download.html       = false; // Ignora HTML
+      imap_data.download.text       = true;  // Baixa texto plano
+      imap_data.download.html       = true;  // Baixa HTML caso não haja texto plano
       imap_data.download.attachment = false; // Ignora anexos grandes
       imap_data.download.inlineImg  = false;
 
       // Habilita recebimento do corpo na RAM
       imap_data.enable.text         = true;
-      imap_data.enable.html         = false;
-      imap_data.limit.msg_size      = 50000; // Limita o e-mail em 50KB para não estourar a RAM!
+      imap_data.enable.html         = true;
+      imap_data.limit.msg_size      = 25000; // Limite conservador de 25KB para garantir folga total na RAM!
 
       // Executa o Fetch (callback processará o corpo na RAM)
       MailClient.readMail(&imap, false);
