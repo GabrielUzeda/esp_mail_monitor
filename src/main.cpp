@@ -71,15 +71,19 @@ std::vector<int> uidsParaBuscar;
 // Escapa os caracteres críticos para o Payload ser aceito no formato JSON sem erros
 String escaparJson(const String &input) {
   String saida;
-  saida.reserve(input.length() + 16); 
+  saida.reserve(input.length() + 32); 
   for (size_t i = 0; i < input.length(); i++) {
     char c = input.charAt(i);
     switch (c) {
-      case '"':  saida += "\""; break;
+      case '"':  saida += "\\\""; break;
       case '\\': saida += "\\\\"; break;
       case '\n': saida += "\\n";  break;
       case '\r': break; 
-      default:   saida += c;
+      case '\t': saida += "\\t";  break;
+      default:
+        if ((uint8_t)c >= 32) {
+          saida += c;
+        }
     }
   }
   return saida;
@@ -96,20 +100,6 @@ String askGemini(String textoEmail, bool foiTruncado = false) {
     textoEmail = textoEmail.substring(0, 6000) + F("\n[...texto truncado]");
   }
 
-  WiFiClientSecure client;
-  client.setInsecure();
-  client.setTimeout(20000);
-  HTTPClient http;
-  String url = String("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=") + GEMINI_API_KEY;
-  if (!http.begin(client, url)) {
-    Serial.println(F("Falha ao iniciar HTTPClient para Gemini"));
-    registrarErro("Falha ao conectar no Gemini HTTPS");
-    return "_Erro ao conectar ao Gemini_";
-  }
-  http.setTimeout(20000); // 20s de timeout seguro contra o Watchdog (WDT)
-
-  http.addHeader("Content-Type", "application/json");
-
   String prompt;
   if (foiTruncado) {
     prompt = "O e-mail a seguir é longo e foi truncado por limitações de memória do microcontrolador. Resuma as informações principais presentes neste trecho inicial de forma breve e clara em português (destacando datas, prazos ou solicitações, se houver):\n\nConteúdo do e-mail:\n" + textoEmail;
@@ -117,26 +107,59 @@ String askGemini(String textoEmail, bool foiTruncado = false) {
     prompt = "Resuma o conteúdo deste e-mail de forma breve e objetiva, extraindo apenas as informações mais importantes (como datas, horários, convocações ou ações necessárias). Responda em português de forma clara.\n\nConteúdo do e-mail:\n" + textoEmail;
   }
 
+  // Monta o JSON com ArduinoJson para garantir escape 100% em conformidade com RFC 8259
+  DynamicJsonDocument docPayload(10240);
+  docPayload["contents"][0]["parts"][0]["text"] = prompt;
+  docPayload["generationConfig"]["temperature"] = 0.2;
+  docPayload["generationConfig"]["maxOutputTokens"] = 350;
+
   String payload;
-  payload.reserve(prompt.length() + 128);
-  payload += "{\"contents\":[{\"parts\":[{\"text\":\"";
-  payload += escaparJson(prompt);
-  payload += "\"}]}]}";
+  serializeJson(docPayload, payload);
 
-  int code = http.POST(payload);
-  String result = http.getString();
-  http.end();
-  client.stop();
+  String url = String("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=") + GEMINI_API_KEY;
 
-  if (code == 200) {
-    DynamicJsonDocument doc(4096);
-    DeserializationError err = deserializeJson(doc, result);
-    if (!err && doc["candidates"][0]["content"]["parts"][0]["text"]) {
-      return doc["candidates"][0]["content"]["parts"][0]["text"].as<String>();
+  int ultimoCodigo = -1;
+  String ultimoResultado = "";
+
+  // Retry resiliente: até 2 tentativas para tolerar picos de latência ou read timeout (-11)
+  for (int tentativa = 1; tentativa <= 2; tentativa++) {
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setTimeout(25000);
+
+    HTTPClient http;
+    if (http.begin(client, url)) {
+      http.setTimeout(25000);
+      http.addHeader("Content-Type", "application/json");
+
+      ultimoCodigo = http.POST(payload);
+      if (ultimoCodigo == 200) {
+        ultimoResultado = http.getString();
+        http.end();
+        client.stop();
+
+        DynamicJsonDocument doc(4096);
+        DeserializationError err = deserializeJson(doc, ultimoResultado);
+        if (!err && doc["candidates"][0]["content"]["parts"][0]["text"]) {
+          return doc["candidates"][0]["content"]["parts"][0]["text"].as<String>();
+        }
+      } else {
+        ultimoResultado = http.getString();
+        http.end();
+        client.stop();
+      }
+    } else {
+      client.stop();
+    }
+
+    if (tentativa < 2) {
+      Serial.printf("Gemini tentativa %d falhou (%d). Aguardando retry...\n", tentativa, ultimoCodigo);
+      delay(2000);
     }
   }
-  Serial.printf("Erro Analise Gemini (%d): %s\n", code, result.c_str());
-  registrarErro("Gemini API HTTP " + String(code));
+
+  Serial.printf("Erro Analise Gemini (%d): %s\n", ultimoCodigo, ultimoResultado.c_str());
+  registrarErro("Gemini API HTTP " + String(ultimoCodigo));
   return "_Erro ao resumir o email com IA._";
 }
 
