@@ -71,15 +71,19 @@ std::vector<int> uidsParaBuscar;
 // Escapa os caracteres críticos para o Payload ser aceito no formato JSON sem erros
 String escaparJson(const String &input) {
   String saida;
-  saida.reserve(input.length() + 16); 
+  saida.reserve(input.length() + 32); 
   for (size_t i = 0; i < input.length(); i++) {
     char c = input.charAt(i);
     switch (c) {
-      case '"':  saida += "\""; break;
+      case '"':  saida += "\\\""; break;
       case '\\': saida += "\\\\"; break;
       case '\n': saida += "\\n";  break;
       case '\r': break; 
-      default:   saida += c;
+      case '\t': saida += "\\t";  break;
+      default:
+        if ((uint8_t)c >= 32) {
+          saida += c;
+        }
     }
   }
   return saida;
@@ -103,11 +107,14 @@ String askGemini(String textoEmail, bool foiTruncado = false) {
     prompt = "Resuma o conteúdo deste e-mail de forma breve e objetiva, extraindo apenas as informações mais importantes (como datas, horários, convocações ou ações necessárias). Responda em português de forma clara.\n\nConteúdo do e-mail:\n" + textoEmail;
   }
 
+  // Monta o JSON com ArduinoJson para garantir escape 100% em conformidade com RFC 8259
+  DynamicJsonDocument docPayload(10240);
+  docPayload["contents"][0]["parts"][0]["text"] = prompt;
+  docPayload["generationConfig"]["temperature"] = 0.2;
+  docPayload["generationConfig"]["maxOutputTokens"] = 350;
+
   String payload;
-  payload.reserve(prompt.length() + 192);
-  payload += "{\"contents\":[{\"parts\":[{\"text\":\"";
-  payload += escaparJson(prompt);
-  payload += "\"}]}],\"generationConfig\":{\"temperature\":0.2,\"maxOutputTokens\":350}}";
+  serializeJson(docPayload, payload);
 
   String url = String("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=") + GEMINI_API_KEY;
 
