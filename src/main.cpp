@@ -686,7 +686,7 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
     for (int retry = 1; retry <= 3; retry++) {
       WiFiClientSecure client;
       client.setInsecure();
-      client.setTimeout(15000);
+      client.setTimeout(30000);
 
       HTTPClient http;
       // IMPORTANTE: Desativa o redirecionamento automático interno do HTTPClient.
@@ -695,7 +695,7 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
       http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
 
       if (http.begin(client, currentUrl)) {
-        http.setTimeout(25000);
+        http.setTimeout(30000);
         http.addHeader("User-Agent", "ESP32-MailMonitor/1.0");
         const char * headerKeys[] = {"Location", "location"};
         http.collectHeaders(headerKeys, 2);
