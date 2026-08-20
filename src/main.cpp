@@ -92,26 +92,26 @@ String escaparJson(const String &input) {
 // ===================== Gemini API =====================
 const char* GEMINI_API_KEY = SECRET_GEMINI_API_KEY;
 
-String askGemini(String textoEmail, bool foiTruncado = false) {
-  if (textoEmail.length() == 0) return "_E-mail sem conteúdo legível._";
+String askGemini(String assunto, String remetente, String textoEmail, bool foiTruncado = false) {
+  if (textoEmail.length() == 0 && assunto.length() == 0) return "_E-mail sem conteúdo legível._";
 
   // Limita o tamanho do texto enviado ao Gemini para economizar RAM e payload
   if (textoEmail.length() > 6000) {
     textoEmail = textoEmail.substring(0, 6000) + F("\n[...texto truncado]");
   }
 
-  String prompt;
+  String userContent = "De: " + remetente + "\nAssunto: " + assunto + "\n\nConteúdo:\n" + textoEmail;
   if (foiTruncado) {
-    prompt = "O e-mail a seguir é longo e foi truncado por limitações de memória do microcontrolador. Resuma as informações principais presentes neste trecho inicial de forma breve e clara em português (destacando datas, prazos ou solicitações, se houver):\n\nConteúdo do e-mail:\n" + textoEmail;
-  } else {
-    prompt = "Resuma o conteúdo deste e-mail de forma breve e objetiva, extraindo apenas as informações mais importantes (como datas, horários, convocações ou ações necessárias). Responda em português de forma clara.\n\nConteúdo do e-mail:\n" + textoEmail;
+    userContent += F("\n[Nota: Este e-mail foi parcialmente truncado devido a limites de memória do microcontrolador]");
   }
 
   // Monta o JSON com ArduinoJson para garantir escape 100% em conformidade com RFC 8259
   DynamicJsonDocument docPayload(10240);
-  docPayload["contents"][0]["parts"][0]["text"] = prompt;
+  docPayload["systemInstruction"]["parts"][0]["text"] = "Você é um assistente que resume e-mails para notificações no Telegram de um ESP32. Responda diretamente com o resumo e os pontos essenciais em português claro e conciso (ações necessárias, datas, prazos ou contexto principal). Nunca use saudações, preâmbulos ou frases introdutórias (ex: \"Aqui está o resumo\").";
+  docPayload["contents"][0]["parts"][0]["text"] = userContent;
   docPayload["generationConfig"]["temperature"] = 0.2;
-  docPayload["generationConfig"]["maxOutputTokens"] = 350;
+  docPayload["generationConfig"]["maxOutputTokens"] = 600;
+  docPayload["generationConfig"]["thinkingConfig"]["thinkingBudget"] = 0;
 
   String payload;
   serializeJson(docPayload, payload);
@@ -434,9 +434,9 @@ void imapCallback(IMAP_Status status) {
     if (!contemPalavraBloqueada(assunto, corpoLimpo)) {
       String resumoGemini = "_Nenhum conteúdo baixado_";
 
-      if (corpoLimpo.length() > 0) {
+      if (corpoLimpo.length() > 0 || assunto.length() > 0) {
         Serial.println("Solicitando resumo ao Gemini...");
-        resumoGemini = askGemini(corpoLimpo, emailTruncado);
+        resumoGemini = askGemini(assunto, remetente, corpoLimpo, emailTruncado);
       }
 
       String mensagem = "📧 *Novo e-mail (Resumido por IA)!*\n";
