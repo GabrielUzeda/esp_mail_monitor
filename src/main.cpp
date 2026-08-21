@@ -790,14 +790,14 @@ void verificarAgenda() {
     String payload;
     int codigoHttp = -1;
 
-    // Retry loop de 2 tentativas para tolerar cold-starts e oscilações do Google Apps Script
-    for (int tentativa = 1; tentativa <= 2; tentativa++) {
+    // Retry loop de 3 tentativas para tolerar cold-starts e oscilações do Google Apps Script
+    for (int tentativa = 1; tentativa <= 3; tentativa++) {
       codigoHttp = fetchUrlComRedirecionamento(AGENDA_URLS[idx], payload);
       if (codigoHttp == 200) {
         break;
       }
-      if (tentativa < 2) {
-        delay(2000);
+      if (tentativa < 3) {
+        delay(2500 * tentativa);
       }
     }
 
@@ -889,13 +889,13 @@ void enviarResumoDiario() {
     String payload;
     int codigoHttp = -1;
 
-    for (int tentativa = 1; tentativa <= 2; tentativa++) {
+    for (int tentativa = 1; tentativa <= 3; tentativa++) {
       codigoHttp = fetchUrlComRedirecionamento(AGENDA_URLS[idx], payload);
       if (codigoHttp == 200) {
         break;
       }
-      if (tentativa < 2) {
-        delay(2000);
+      if (tentativa < 3) {
+        delay(2500 * tentativa);
       }
     }
 
