@@ -718,8 +718,8 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
       if (http.begin(client, currentUrl)) {
         http.setTimeout(30000);
         http.addHeader("User-Agent", "ESP32-MailMonitor/1.0");
-        const char * headerKeys[] = {"Location", "location", "LOCATION"};
-        http.collectHeaders(headerKeys, 3);
+        const char * headerKeys[] = {"Location"};
+        http.collectHeaders(headerKeys, 1);
 
         statusAttempt = http.GET();
         if (statusAttempt > 0) {
@@ -730,9 +730,24 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
             return 200;
           } else if (statusAttempt == 301 || statusAttempt == 302 || statusAttempt == 303 || statusAttempt == 307 || statusAttempt == 308) {
             String loc = http.header("Location");
-            if (loc.length() == 0) loc = http.header("location");
-            if (loc.length() == 0) loc = http.header("LOCATION");
             if (loc.length() == 0) loc = http.getLocation();
+
+            // Fallback: extrai URL de redirecionamento do corpo HTML da resposta
+            if (loc.length() == 0) {
+              String body = http.getString();
+              int hrefIdx = body.indexOf("HREF=\"");
+              if (hrefIdx == -1) hrefIdx = body.indexOf("href=\"");
+              if (hrefIdx == -1) hrefIdx = body.indexOf("HREF='");
+              if (hrefIdx == -1) hrefIdx = body.indexOf("href='");
+              if (hrefIdx != -1) {
+                char quote = body.charAt(hrefIdx + 5);
+                int endQuote = body.indexOf(quote, hrefIdx + 6);
+                if (endQuote != -1) {
+                  loc = body.substring(hrefIdx + 6, endQuote);
+                  loc.replace("&amp;", "&");
+                }
+              }
+            }
 
             if (loc.length() > 0) {
               if (!loc.startsWith("http://") && !loc.startsWith("https://")) {
@@ -766,7 +781,12 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
     }
 
     finalStatus = statusAttempt;
-    if (finalStatus != 301 && finalStatus != 302 && finalStatus != 303 && finalStatus != 307 && finalStatus != 308) {
+    // Se o status for redirect mas nenhuma Location foi encontrada, interrompe o loop
+    if (finalStatus == 301 || finalStatus == 302 || finalStatus == 303 || finalStatus == 307 || finalStatus == 308) {
+      if (currentUrl == urlInicial) {
+        break; // Não foi possível resolver destino de redirecionamento
+      }
+    } else {
       break;
     }
     delay(500);
