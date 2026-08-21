@@ -495,110 +495,135 @@ void imapCallback(IMAP_Status status) {
 // ===================== Fluxo Principal do IMAP =====================
 bool verificarContaEmail(EmailAccount &conta) {
   contaAtual = &conta;
-  bool sucesso = true;
+  bool sucesso = false;
 
-  // Garante fechamento prévio de qualquer sessão pendente e liberação de RAM
-  imap.closeSession();
-  imap.empty();
-
-  Session_Config config;
-  config.server.host_name = IMAP_HOST;
-  config.server.port = IMAP_PORT;
-  config.login.email = conta.email;
-  config.login.password = conta.appPassword;
-
-  // Limpa lista de UIDs para buscar
-  uidsParaBuscar.clear();
-
-  IMAP_Data imap_data;
-
-  // FASE 1: BUSCA (Apenas busca as UIDs não lidas)
-  imap_data.search.criteria = F("UNSEEN");
-  imap_data.limit.search = 5;
-  imap_data.limit.msg_size = 512;
-  imap_data.fetch.uid.clear();
-
-  // Desativa downloads e buffers de corpo para busca rápida
-  imap_data.storage.type = esp_mail_file_storage_type_none;
-  imap_data.download.header     = true;
-  imap_data.download.text       = false;
-  imap_data.download.html       = false;
-  imap_data.download.attachment = false;
-  imap_data.download.inlineImg  = false;
-  imap_data.enable.text = false;
-  imap_data.enable.html = false;
-  imap_data.enable.recent_sort = true;
-
-  if (!imap.connect(&config, &imap_data)) {
-    Serial.printf("Falha de conexão IMAP (Busca): %s (código %d, %s)\n",
-                  conta.email, imap.errorCode(), imap.errorReason().c_str());
-    String motivo = "IMAP Conexão (" + String(conta.email) + "): [" + String(imap.errorCode()) + "] " + imap.errorReason();
-    registrarErro(motivo);
+  for (int tentativa = 1; tentativa <= 2; tentativa++) {
+    // Garante fechamento prévio de qualquer sessão pendente e liberação de RAM
     imap.closeSession();
     imap.empty();
-    return false;
-  }
 
-  // Define de onde puxar os e-mails e usa "true" para readOnlyMode (impede marcação de lido)
-  if (!imap.selectFolder(F("INBOX"), true)) {
-    Serial.printf("Falha ao selecionar Caixa de Entrada para corpos: %s\n", conta.email);
-    String motivo = "IMAP SelectFolder (" + String(conta.email) + "): [" + String(imap.errorCode()) + "] " + imap.errorReason();
-    registrarErro(motivo);
-    sucesso = false;
-    goto cleanup;
-  }
+    Session_Config config;
+    config.server.host_name = IMAP_HOST;
+    config.server.port = IMAP_PORT;
+    config.login.email = conta.email;
+    config.login.password = conta.appPassword;
 
-  // Dispara a busca (imapCallback preenche uidsParaBuscar)
-  // O segundo parâmetro = false mantém a sessão aberta
-  MailClient.readMail(&imap, false); 
+    // Limpa lista de UIDs para buscar
+    uidsParaBuscar.clear();
 
-  if (imap.errorCode() > 0) {
-    Serial.printf("Erro na busca IMAP UNSEEN: %s\n", imap.errorReason().c_str());
-    String motivo = "IMAP Search UNSEEN (" + String(conta.email) + "): [" + String(imap.errorCode()) + "] " + imap.errorReason();
-    registrarErro(motivo);
-    sucesso = false;
-    goto cleanup;
-  }
+    IMAP_Data imap_data;
 
-  // FASE 2: FETCH (Baixa o corpo diretamente para a RAM para cada UID encontrada)
-  if (!uidsParaBuscar.empty()) {
-    Serial.printf("Iniciando busca de corpos para %d UIDs...\n", (int)uidsParaBuscar.size());
-    std::vector<int> localUids = uidsParaBuscar;
-    for (int uid : localUids) {
-      Serial.printf("Baixando corpo para UID: %d\n", uid);
-      
-      // Limpa critério de busca e define UID específica para o Fetch
-      imap_data.search.criteria.clear();
-      imap_data.fetch.uid = String(uid);
+    // FASE 1: BUSCA (Apenas busca as UIDs não lidas)
+    imap_data.search.criteria = F("UNSEEN");
+    imap_data.limit.search = 5;
+    imap_data.limit.msg_size = 512;
+    imap_data.fetch.uid.clear();
 
-      // Recebe na RAM de forma limitada e super segura (Max 50KB)
-      imap_data.storage.type = esp_mail_file_storage_type_none;
-      imap_data.fetch.set_seen      = false; // Garante que não marcará como lido no fetch
-      imap_data.download.header     = true;
-      imap_data.download.text       = true;  // Baixa texto plano
-      imap_data.download.html       = true;  // Baixa HTML caso não haja texto plano
-      imap_data.download.attachment = false; // Ignora anexos grandes
-      imap_data.download.inlineImg  = false;
+    // Desativa downloads e buffers de corpo para busca rápida
+    imap_data.storage.type = esp_mail_file_storage_type_none;
+    imap_data.download.header     = true;
+    imap_data.download.text       = false;
+    imap_data.download.html       = false;
+    imap_data.download.attachment = false;
+    imap_data.download.inlineImg  = false;
+    imap_data.enable.text = false;
+    imap_data.enable.html = false;
+    imap_data.enable.recent_sort = true;
 
-      // Habilita recebimento do corpo na RAM
-      imap_data.enable.text         = true;
-      imap_data.enable.html         = true;
-      imap_data.limit.msg_size      = 25000; // Limite conservador de 25KB para garantir folga total na RAM!
-
-      // Executa o Fetch (callback processará o corpo na RAM)
-      MailClient.readMail(&imap, false);
-      
-      if (imap.errorCode() > 0) {
-        Serial.println("Erro durante o download do corpo do e-mail!");
-        String motivo = "IMAP Fetch Corpo UID " + String(uid) + " (" + String(conta.email) + "): [" + String(imap.errorCode()) + "] " + imap.errorReason();
+    if (!imap.connect(&config, &imap_data)) {
+      Serial.printf("Falha de conexão IMAP (Busca, tentativa %d/2): %s (código %d, %s)\n",
+                    tentativa, conta.email, imap.errorCode(), imap.errorReason().c_str());
+      if (tentativa == 2) {
+        String motivo = "IMAP Conexão (" + String(conta.email) + "): [" + String(imap.errorCode()) + "] " + imap.errorReason();
         registrarErro(motivo);
-        sucesso = false;
-        goto cleanup;
+      }
+      imap.closeSession();
+      imap.empty();
+      if (tentativa < 2) delay(3000);
+      continue;
+    }
+
+    // Define de onde puxar os e-mails e usa "true" para readOnlyMode (impede marcação de lido)
+    if (!imap.selectFolder(F("INBOX"), true)) {
+      Serial.printf("Falha ao selecionar Caixa de Entrada (tentativa %d/2): %s\n", tentativa, conta.email);
+      if (tentativa == 2) {
+        String motivo = "IMAP SelectFolder (" + String(conta.email) + "): [" + String(imap.errorCode()) + "] " + imap.errorReason();
+        registrarErro(motivo);
+      }
+      imap.closeSession();
+      imap.empty();
+      if (tentativa < 2) delay(3000);
+      continue;
+    }
+
+    // Dispara a busca (imapCallback preenche uidsParaBuscar)
+    MailClient.readMail(&imap, false); 
+
+    if (imap.errorCode() > 0) {
+      Serial.printf("Erro na busca IMAP UNSEEN (tentativa %d/2): %s\n", tentativa, imap.errorReason().c_str());
+      if (tentativa == 2) {
+        String motivo = "IMAP Search UNSEEN (" + String(conta.email) + "): [" + String(imap.errorCode()) + "] " + imap.errorReason();
+        registrarErro(motivo);
+      }
+      imap.closeSession();
+      imap.empty();
+      if (tentativa < 2) delay(3000);
+      continue;
+    }
+
+    // FASE 2: FETCH (Baixa o corpo diretamente para a RAM para cada UID encontrada)
+    bool erroNoFetch = false;
+    if (!uidsParaBuscar.empty()) {
+      Serial.printf("Iniciando busca de corpos para %d UIDs...\n", (int)uidsParaBuscar.size());
+      std::vector<int> localUids = uidsParaBuscar;
+      for (int uid : localUids) {
+        Serial.printf("Baixando corpo para UID: %d\n", uid);
+        
+        // Limpa critério de busca e define UID específica para o Fetch
+        imap_data.search.criteria.clear();
+        imap_data.fetch.uid = String(uid);
+
+        // Recebe na RAM de forma limitada e super segura (Max 50KB)
+        imap_data.storage.type = esp_mail_file_storage_type_none;
+        imap_data.fetch.set_seen      = false; // Garante que não marcará como lido no fetch
+        imap_data.download.header     = true;
+        imap_data.download.text       = true;  // Baixa texto plano
+        imap_data.download.html       = true;  // Baixa HTML caso não haja texto plano
+        imap_data.download.attachment = false; // Ignora anexos grandes
+        imap_data.download.inlineImg  = false;
+
+        // Habilita recebimento do corpo na RAM
+        imap_data.enable.text         = true;
+        imap_data.enable.html         = true;
+        imap_data.limit.msg_size      = 25000; // Limite conservador de 25KB para garantir folga total na RAM!
+
+        // Executa o Fetch (callback processará o corpo na RAM)
+        MailClient.readMail(&imap, false);
+        
+        if (imap.errorCode() > 0) {
+          Serial.printf("Erro durante o download do corpo do e-mail UID %d (tentativa %d/2): [%d] %s\n", uid, tentativa, imap.errorCode(), imap.errorReason().c_str());
+          erroNoFetch = true;
+          break;
+        }
       }
     }
+
+    if (erroNoFetch) {
+      if (tentativa == 2) {
+        String motivo = "IMAP Fetch Corpo (" + String(conta.email) + "): [" + String(imap.errorCode()) + "] " + imap.errorReason();
+        registrarErro(motivo);
+      }
+      imap.closeSession();
+      imap.empty();
+      if (tentativa < 2) delay(3000);
+      continue;
+    }
+
+    // Se chegou aqui sem erro, tudo correu com sucesso!
+    sucesso = true;
+    break;
   }
 
-cleanup:
   // Derruba a sessão ativamente e limpa buffers para poupar a Heap Memory
   imap.closeSession();
   imap.empty();
@@ -1069,12 +1094,15 @@ void setup() {
     }
   }
 
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("Conectando ao Wi-Fi");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
+  WiFi.setSleep(false); // Desativa Wi-Fi Modem Sleep para estabilidade total de conexões TLS/SSL
   Serial.println(F("\nWi-Fi conectado com sucesso!"));
 
   // Configura a hora via NTP usando a API nativa do ESP32 (Fuso -3 para Horário de Brasília)
@@ -1120,6 +1148,7 @@ void loop() {
 
   if (!wifiWasConnected) {
     wifiWasConnected = true;
+    WiFi.setSleep(false); // Garante que o sleep permaneça desativado após reconexão
     digitalWrite(LED_PIN, LOW); // Apaga o LED pois o Wi-Fi reconectou
     Serial.println(F("Wi-Fi reconectado com sucesso!"));
   }
