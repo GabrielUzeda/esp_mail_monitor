@@ -788,7 +788,18 @@ void verificarAgenda() {
     }
 
     String payload;
-    int codigoHttp = fetchUrlComRedirecionamento(AGENDA_URLS[idx], payload);
+    int codigoHttp = -1;
+
+    // Retry loop de 2 tentativas para tolerar cold-starts e oscilações do Google Apps Script
+    for (int tentativa = 1; tentativa <= 2; tentativa++) {
+      codigoHttp = fetchUrlComRedirecionamento(AGENDA_URLS[idx], payload);
+      if (codigoHttp == 200) {
+        break;
+      }
+      if (tentativa < 2) {
+        delay(2000);
+      }
+    }
 
     if (codigoHttp != 200) {
       Serial.printf("Erro na requisição da Agenda %d: %d\n", idx + 1, codigoHttp);
@@ -876,7 +887,17 @@ void enviarResumoDiario() {
     }
 
     String payload;
-    int codigoHttp = fetchUrlComRedirecionamento(AGENDA_URLS[idx], payload);
+    int codigoHttp = -1;
+
+    for (int tentativa = 1; tentativa <= 2; tentativa++) {
+      codigoHttp = fetchUrlComRedirecionamento(AGENDA_URLS[idx], payload);
+      if (codigoHttp == 200) {
+        break;
+      }
+      if (tentativa < 2) {
+        delay(2000);
+      }
+    }
 
     if (codigoHttp != 200) {
       Serial.printf("Erro na requisição do Resumo Diário %d: %d\n", idx + 1, codigoHttp);
