@@ -18,7 +18,7 @@ case "$1" in
             fi
         fi
         echo "Starting monitor on $PORT ($BAUD)..."
-        nohup nix-shell -p python3Packages.pyserial --run "python3 monitor.py --port $PORT --baud $BAUD" > /tmp/esp32_monitor.out 2>&1 &
+        nohup nix-shell -p python3Packages.pyserial --command "exec python3 -u /home/gsuzeda/Projects/esp_mail_monitor/monitor.py --port $PORT --baud $BAUD" < /dev/null > /tmp/esp32_monitor.out 2>&1 &
         echo $! > "$PID_FILE"
         echo "Monitor started with PID: $(cat $PID_FILE)"
         ;;

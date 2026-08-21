@@ -59,6 +59,8 @@ unsigned long tempoAnteriorAgenda = 0;
 const unsigned long intervaloChecagemAgenda = 120000; // 2 minutos = 120000ms
 
 IMAPSession imap;
+Session_Config config;
+IMAP_Data imap_data;
 Preferences preferences;
 
 // Ponteiro para a conta sendo processada (acessado dentro do callback)
@@ -387,26 +389,25 @@ void imapCallback(IMAP_Status status) {
   // Se a operação foi finalizada em modo de cabeçalho (apenas busca)
   if (imap.headerOnly()) {
     uidsParaBuscar.clear();
-    IMAP_MSG_List msgList = imap.data();
+    const IMAP_MSG_List &msgList = imap.data();
     Serial.printf("Busca concluída: msgList size = %d, lastUID = %d\n", (int)msgList.msgItems.size(), contaAtual->lastUID);
     for (size_t i = 0; i < msgList.msgItems.size(); i++) {
-      IMAP_MSG_Item msg = msgList.msgItems[i];
+      const IMAP_MSG_Item &msg = msgList.msgItems[i];
       Serial.printf("Encontrado e-mail: UID = %d, Assunto = %s\n", msg.UID, msg.subject ? msg.subject : "NULL");
       if (msg.UID > contaAtual->lastUID) {
         uidsParaBuscar.push_back(msg.UID);
         Serial.printf("Adicionado UID %d para busca de corpo\n", msg.UID);
       }
     }
-    imap.empty(); // Libera RAM
     return;
   }
 
   // Se a operação foi finalizada em modo de leitura de corpo (Fetch)
-  IMAP_MSG_List msgList = imap.data();
+  const IMAP_MSG_List &msgList = imap.data();
   int maxUID = contaAtual->lastUID;
 
   for (size_t i = 0; i < msgList.msgItems.size(); i++) {
-    IMAP_MSG_Item msg = msgList.msgItems[i];
+    const IMAP_MSG_Item &msg = msgList.msgItems[i];
     Serial.printf("Processando e-mail baixado: UID = %d, Assunto = %s\n", msg.UID, msg.subject ? msg.subject : "NULL");
 
     if (msg.UID <= contaAtual->lastUID) {
@@ -486,9 +487,6 @@ void imapCallback(IMAP_Status status) {
       Serial.printf("Salvo novo UID (%d) para conta %s\n", maxUID, contaAtual->email);
     }
   }
-
-  // Libera buffer interno do IMAP para preservar a RAM do ESP32
-  imap.empty();
 }
 
 
@@ -502,7 +500,6 @@ bool verificarContaEmail(EmailAccount &conta) {
     imap.closeSession();
     imap.empty();
 
-    Session_Config config;
     config.server.host_name = IMAP_HOST;
     config.server.port = IMAP_PORT;
     config.login.email = conta.email;
@@ -511,10 +508,9 @@ bool verificarContaEmail(EmailAccount &conta) {
     // Limpa lista de UIDs para buscar
     uidsParaBuscar.clear();
 
-    IMAP_Data imap_data;
-
     // FASE 1: BUSCA (Apenas busca as UIDs não lidas)
-    imap_data.search.criteria = F("UNSEEN");
+    imap_data.search.criteria = F("SEARCH UNSEEN");
+    imap_data.search.unseen_msg = true;
     imap_data.limit.search = 5;
     imap_data.limit.msg_size = 512;
     imap_data.fetch.uid.clear();
@@ -1074,6 +1070,75 @@ void imprimirErros() {
   }
 }
 
+void backgroundWorkerTask(void *pvParameters) {
+  // Execução inicial ao ligar
+  verificarTodasContas();
+  vTaskDelay(pdMS_TO_TICKS(2000)); // Pausa de 2s para liberar socket SSL do IMAP antes de iniciar a Agenda
+  verificarAgenda();
+  tempoAnterior = millis();
+  tempoAnteriorAgenda = millis();
+  imprimirErros();
+
+  for (;;) {
+    static bool wifiWasConnected = true;
+
+    // Lógica auto-recuperável: Reconecta se a internet cair em algum momento do dia
+    if (WiFi.status() != WL_CONNECTED) {
+      registrarErro("Acende o LED de erro por falha de Wi-Fi");
+      digitalWrite(LED_PIN, HIGH); // Acende o LED de erro por falha de Wi-Fi
+      wifiWasConnected = false;
+      Serial.println(F("Wi-Fi desconectado, tentando reconectar..."));
+      WiFi.disconnect();
+      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+      vTaskDelay(pdMS_TO_TICKS(intervaloRetryWifi));
+      continue;
+    }
+
+    if (!wifiWasConnected) {
+      wifiWasConnected = true;
+      WiFi.setSleep(false); // Garante que o sleep permaneça desativado após reconexão
+      digitalWrite(LED_PIN, LOW); // Apaga o LED pois o Wi-Fi reconectou
+      Serial.println(F("Wi-Fi reconectado com sucesso!"));
+    }
+
+    unsigned long tempoAtual = millis();
+    
+    if (tempoAtual - tempoAnterior >= intervaloChecagem) {
+      tempoAnterior = tempoAtual;
+      Serial.println(F("Iniciando varredura periódica de e-mails..."));
+      verificarTodasContas();
+      vTaskDelay(pdMS_TO_TICKS(2000)); // Pausa de 2s para liberar socket SSL do IMAP
+    }
+
+    if (tempoAtual - tempoAnteriorAgenda >= intervaloChecagemAgenda) {
+      tempoAnteriorAgenda = tempoAtual;
+      Serial.println(F("Iniciando varredura periódica da agenda..."));
+      verificarAgenda();
+    }
+
+    // Ressincronização diária do NTP para prevenir desvios (drift) no relógio
+    static unsigned long tempoAnteriorNTP = millis();
+    if (tempoAtual - tempoAnteriorNTP >= 86400000) {
+      tempoAnteriorNTP = tempoAtual;
+      configTime(-3 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+      Serial.println(F("Ressincronizando horário NTP..."));
+    }
+
+    // Lógica do Resumo Diário às 06:30 da manhã (GMT-3)
+    static int ultimoDiaResumo = -1;
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+      if (timeinfo.tm_hour == 6 && timeinfo.tm_min == 30 && timeinfo.tm_mday != ultimoDiaResumo) {
+        ultimoDiaResumo = timeinfo.tm_mday;
+        Serial.println(F("Disparando resumo diário (06:30)..."));
+        enviarResumoDiario();
+      }
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -1122,69 +1187,19 @@ void setup() {
   // Atribui a função que a biblioteca executará sempre que encontrar novos e-mails
   imap.callback(imapCallback);
 
-  // Execução inicial ao ligar
-  verificarTodasContas();
-  delay(2000); // Pausa de 2s para liberar socket SSL do IMAP antes de iniciar a Agenda
-  verificarAgenda();
-  tempoAnterior = millis();
-  tempoAnteriorAgenda = millis();
-  imprimirErros();
+  // Cria a tarefa dedicada com 32KB de stack no Core 1 para isolar BearSSL, HTTPClient e Gemini
+  xTaskCreatePinnedToCore(
+    backgroundWorkerTask,
+    "WorkerTask",
+    32768,
+    NULL,
+    1,
+    NULL,
+    1
+  );
 }
 
 void loop() {
-  static bool wifiWasConnected = true;
-
-  // Lógica auto-recuperável: Reconecta se a internet cair em algum momento do dia
-  if (WiFi.status() != WL_CONNECTED) {
-    registrarErro("Acende o LED de erro por falha de Wi-Fi");
-    digitalWrite(LED_PIN, HIGH); // Acende o LED de erro por falha de Wi-Fi
-    wifiWasConnected = false;
-    Serial.println(F("Wi-Fi desconectado, tentando reconectar..."));
-    WiFi.disconnect();
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    delay(intervaloRetryWifi);
-    return;
-  }
-
-  if (!wifiWasConnected) {
-    wifiWasConnected = true;
-    WiFi.setSleep(false); // Garante que o sleep permaneça desativado após reconexão
-    digitalWrite(LED_PIN, LOW); // Apaga o LED pois o Wi-Fi reconectou
-    Serial.println(F("Wi-Fi reconectado com sucesso!"));
-  }
-
-  unsigned long tempoAtual = millis();
-  
-  if (tempoAtual - tempoAnterior >= intervaloChecagem) {
-    tempoAnterior = tempoAtual;
-    Serial.println(F("Iniciando varredura periódica de e-mails..."));
-    verificarTodasContas();
-    delay(2000); // Pausa de 2s para liberar socket SSL do IMAP
-  }
-
-  if (tempoAtual - tempoAnteriorAgenda >= intervaloChecagemAgenda) {
-    tempoAnteriorAgenda = tempoAtual;
-    Serial.println(F("Iniciando varredura periódica da agenda..."));
-    verificarAgenda();
-  }
-
-  // Ressincronização diária do NTP para prevenir desvios (drift) no relógio
-  static unsigned long tempoAnteriorNTP = millis();
-  if (tempoAtual - tempoAnteriorNTP >= 86400000) {
-    tempoAnteriorNTP = tempoAtual;
-    configTime(-3 * 3600, 0, "pool.ntp.org", "time.nist.gov");
-    Serial.println(F("Ressincronizando horário NTP..."));
-  }
-
-  // Lógica do Resumo Diário às 06:30 da manhã (GMT-3)
-  static int ultimoDiaResumo = -1;
-  struct tm timeinfo;
-  if (getLocalTime(&timeinfo)) {
-    if (timeinfo.tm_hour == 6 && timeinfo.tm_min == 30 && timeinfo.tm_mday != ultimoDiaResumo) {
-      ultimoDiaResumo = timeinfo.tm_mday;
-      Serial.println(F("Disparando resumo diário (06:30)..."));
-      enviarResumoDiario();
-    }
-  }
+  vTaskDelay(pdMS_TO_TICKS(5000));
 }
 
