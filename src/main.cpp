@@ -718,8 +718,8 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
       if (http.begin(client, currentUrl)) {
         http.setTimeout(30000);
         http.addHeader("User-Agent", "ESP32-MailMonitor/1.0");
-        const char * headerKeys[] = {"Location", "location"};
-        http.collectHeaders(headerKeys, 2);
+        const char * headerKeys[] = {"Location", "location", "LOCATION"};
+        http.collectHeaders(headerKeys, 3);
 
         statusAttempt = http.GET();
         if (statusAttempt > 0) {
@@ -731,6 +731,7 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
           } else if (statusAttempt == 301 || statusAttempt == 302 || statusAttempt == 303 || statusAttempt == 307 || statusAttempt == 308) {
             String loc = http.header("Location");
             if (loc.length() == 0) loc = http.header("location");
+            if (loc.length() == 0) loc = http.header("LOCATION");
             if (loc.length() == 0) loc = http.getLocation();
 
             if (loc.length() > 0) {
@@ -746,15 +747,13 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
                 }
               }
               currentUrl = loc;
+              http.end();
+              client.stop();
+              break; // Redirect válido encontrado, avança para próxima URL
             }
           }
           http.end();
           client.stop();
-
-          // Se for redirect válido (30x), avança para o próximo passo imediatamente
-          if (statusAttempt == 301 || statusAttempt == 302 || statusAttempt == 303 || statusAttempt == 307 || statusAttempt == 308) {
-            break;
-          }
         } else {
           http.end();
           client.stop();
