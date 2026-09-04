@@ -89,15 +89,20 @@ Esta seção lista abordagens testadas no passado que **falharam**, geraram efei
 
 > **Regra de Manutenção:** Toda nova correção deve ser registrada aqui. A cada nova leitura, o status deve ser atualizado com o veredito final.
 
-### Correção Registrada em 03/09/2026: Diagnóstico e Correção do Fluxo de Redirect da Agenda
-- **O que foi feito:**
-  1. Identificação da causa raiz do disparo maciço de mensagens `🚨 *[DEBUG ERROR] Agenda X: Erro HTTP 302*` no Telegram.
-  2. A função `fetchUrlComRedirecionamento()` estava retornando o código HTTP 302 bruto para a função chamadora (`verificarAgenda`), que considerava `codigoHttp != 200` como um erro fatal e registrava `registrarErro()`, disparando o Telegram.
-  3. Mapeamento detalhado pelo Git de todas as tentativas anteriores de estabilização do redirecionamento.
-  4. Manutenção ativa do script de monitoramento contínuo `monitor.py` conectado na porta `/dev/ttyUSB0` (115200 baud) capturando telemetria da placa.
-- **Para qual objetivo:** Eliminar os falsos positivos de erro no Telegram causados pelo código HTTP 302 transitório e estruturar a governança de correções do firmware via `/git-flow`.
-- **Status Atual:** `[EM MONITORAMENTO]`
-- **Próxima Leitura / Veredito:** Verificar se após o ajuste estrutural no tratamento de 302 e logging da agenda o monitoramento confirma zero alertas espúrios no Telegram.
+### Correção Registrada em 03/09/2026: Diagnóstico Preliminar do HTTP 302 da Agenda
+- **O que foi feito:** Mapeamento no Git das falhas históricas, ativação do script de monitoramento contínuo em background (`monitor.py` na `/dev/ttyUSB0`) e diagnóstico da causa raiz dos erros HTTP 302 disparados no Telegram.
+- **Veredito em 04/09/2026:** ❌ **[CONFIRMAÇÃO DO PROBLEMA]**: O monitoramento contínuo capturou exatamente as ocorrências de erro HTTP 302 em tempo real (`16:36:36` e `17:32:40`), confirmando que `fetchUrlComRedirecionamento()` propagava o código 302 bruto como erro fatal quando o redirect não resolvia ou o Location vinha vazio.
+
+### Última Correção em 04/09/2026: Resolução Estrutural de Redirecionamento HTTP 302 na Agenda
+- **Última correção foi feito:**
+  1. Remoção da extração ineficaz de regex HTML `HREF` do corpo (respostas 302 do Apps Script possuem `Content-Length: 0`).
+  2. Adição de sanitização `loc.trim()` e verificação estrita da flag `redirecionou`.
+  3. Garantia de que `fetchUrlComRedirecionamento()` **NUNCA** retorna código `302` como status final: caso o redirect não seja resolvido ou a Location venha vazia, retorna código negativo explícito (`HTTPC_ERROR_CONNECTION_LOST` ou `HTTPC_ERROR_CONNECTION_REFUSED`).
+  4. Inclusão de logs detalhados de diagnóstico na Serial para indicar exatamente a tentativa e o motivo de falha em cada salto TLS.
+  5. Ajuste de pausa entre saltos TLS para 200ms permitindo limpeza de sockets pelo LWIP.
+- **Para qual objetivo:** Eliminar o retorno espúrio de status 302 para `verificarAgenda()`, prevenindo que redirecionamentos normais ou transitórios acionem falsos alertas de debug no Telegram.
+- **Status Atual:** `[EM HOMOLOGAÇÃO / AGUARDANDO GRAVAÇÃO]`
+- **Próxima Leitura / Veredito:** Após gravação na placa, validar pelo monitor se o código 302 foi 100% extinto e se a agenda continua sendo consultada com sucesso.
 
 ---
 

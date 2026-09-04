@@ -703,6 +703,7 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
   while (maxRedirects > 0 && currentUrl.length() > 0) {
     maxRedirects--;
     int statusAttempt = -1;
+    bool redirecionou = false;
 
     for (int retry = 1; retry <= 3; retry++) {
       WiFiClientSecure client;
@@ -731,23 +732,7 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
           } else if (statusAttempt == 301 || statusAttempt == 302 || statusAttempt == 303 || statusAttempt == 307 || statusAttempt == 308) {
             String loc = http.header("Location");
             if (loc.length() == 0) loc = http.getLocation();
-
-            // Fallback: extrai URL de redirecionamento do corpo HTML da resposta
-            if (loc.length() == 0) {
-              String body = http.getString();
-              int hrefIdx = body.indexOf("HREF=\"");
-              if (hrefIdx == -1) hrefIdx = body.indexOf("href=\"");
-              if (hrefIdx == -1) hrefIdx = body.indexOf("HREF='");
-              if (hrefIdx == -1) hrefIdx = body.indexOf("href='");
-              if (hrefIdx != -1) {
-                char quote = body.charAt(hrefIdx + 5);
-                int endQuote = body.indexOf(quote, hrefIdx + 6);
-                if (endQuote != -1) {
-                  loc = body.substring(hrefIdx + 6, endQuote);
-                  loc.replace("&amp;", "&");
-                }
-              }
-            }
+            loc.trim();
 
             if (loc.length() > 0) {
               if (!loc.startsWith("http://") && !loc.startsWith("https://")) {
@@ -764,7 +749,10 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
               currentUrl = loc;
               http.end();
               client.stop();
-              break; // Redirect válido encontrado, avança para próxima URL
+              redirecionou = true;
+              break; // Redirect válido encontrado, avança para o próximo host
+            } else {
+              Serial.printf("  [HTTP] Tentativa %d: Resposta %d sem header Location válido.\n", retry, statusAttempt);
             }
           }
           http.end();
@@ -781,15 +769,20 @@ int fetchUrlComRedirecionamento(String urlInicial, String &outPayload) {
     }
 
     finalStatus = statusAttempt;
-    // Se o status for redirect mas nenhuma Location foi encontrada, interrompe o loop
+    // Se o status for redirect mas nenhuma Location foi encontrada após as tentativas, aborta com erro
     if (finalStatus == 301 || finalStatus == 302 || finalStatus == 303 || finalStatus == 307 || finalStatus == 308) {
-      if (currentUrl == urlInicial) {
-        break; // Não foi possível resolver destino de redirecionamento
+      if (!redirecionou) {
+        Serial.println(F("  [HTTP] Falha: Redirecionamento não pôde ser resolvido (Location ausente/vazia)."));
+        return HTTPC_ERROR_CONNECTION_LOST; // Retorna código negativo, NUNCA código 302
       }
     } else {
       break;
     }
-    delay(500);
+    delay(200); // Pausa para desalocação de sockets pelo LWIP antes do próximo salto TLS
+  }
+
+  if (finalStatus == 301 || finalStatus == 302 || finalStatus == 303 || finalStatus == 307 || finalStatus == 308) {
+    return HTTPC_ERROR_CONNECTION_REFUSED;
   }
 
   return finalStatus;
