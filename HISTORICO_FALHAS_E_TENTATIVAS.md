@@ -93,16 +93,15 @@ Esta seção lista abordagens testadas no passado que **falharam**, geraram efei
 - **O que foi feito:** Mapeamento no Git das falhas históricas, ativação do script de monitoramento contínuo em background (`monitor.py` na `/dev/ttyUSB0`) e diagnóstico da causa raiz dos erros HTTP 302 disparados no Telegram.
 - **Veredito em 04/09/2026:** ❌ **[CONFIRMAÇÃO DO PROBLEMA]**: O monitoramento contínuo capturou exatamente as ocorrências de erro HTTP 302 em tempo real (`16:36:36` e `17:32:40`), confirmando que `fetchUrlComRedirecionamento()` propagava o código 302 bruto como erro fatal quando o redirect não resolvia ou o Location vinha vazio.
 
-### Última Correção em 04/09/2026: Resolução Estrutural de Redirecionamento HTTP 302 na Agenda
-- **Última correção foi feito:**
-  1. Remoção da extração ineficaz de regex HTML `HREF` do corpo (respostas 302 do Apps Script possuem `Content-Length: 0`).
-  2. Adição de sanitização `loc.trim()` e verificação estrita da flag `redirecionou`.
-  3. Garantia de que `fetchUrlComRedirecionamento()` **NUNCA** retorna código `302` como status final: caso o redirect não seja resolvido ou a Location venha vazia, retorna código negativo explícito (`HTTPC_ERROR_CONNECTION_LOST` ou `HTTPC_ERROR_CONNECTION_REFUSED`).
-  4. Inclusão de logs detalhados de diagnóstico na Serial para indicar exatamente a tentativa e o motivo de falha em cada salto TLS.
-  5. Ajuste de pausa entre saltos TLS para 200ms permitindo limpeza de sockets pelo LWIP.
-- **Para qual objetivo:** Eliminar o retorno espúrio de status 302 para `verificarAgenda()`, prevenindo que redirecionamentos normais ou transitórios acionem falsos alertas de debug no Telegram.
-- **Status Atual:** `[EM HOMOLOGAÇÃO / AGUARDANDO GRAVAÇÃO]`
-- **Próxima Leitura / Veredito:** Após gravação na placa, validar pelo monitor se o código 302 foi 100% extinto e se a agenda continua sendo consultada com sucesso.
+### Correção Registrada em 04/09/2026: Resolução Estrutural de Redirecionamento HTTP 302 na Agenda
+- **O que foi feito:** Eliminação do retorno bruto de status 302 em `fetchUrlComRedirecionamento()`, sanitização de headers `Location` com `trim()`, remoção de regex HTML ineficaz e pausa de 200ms para limpeza de sockets LWIP.
+- **Veredito em 04/09/2026:** ✅ **[SUCESSO COMPROVADO]**: O código 302 foi 100% extinto como erro terminal na Agenda 1 e 2. Porém, revelou-se um erro HTTP 404 permanente na Agenda 2 porque a implantação antiga no Google Apps Script foi desativada/recriada.
+
+### Última Correção em 04/09/2026: Atualização da URL de Implantação da Agenda 2
+- **Última correção foi feito:** Atualização da URL da Agenda 2 em `src/main.cpp` para a nova implantação ativa do Google Apps Script com autorização OAuth2 (`setup()` executado com sucesso e acesso público concedido).
+- **Para qual objetivo:** Restaurar a sincronização da Agenda 2 com sucesso, eliminando o erro HTTP 404 e restabelecendo a consulta de eventos e tarefas em ambas as contas.
+- **Status Atual:** `[EM HOMOLOGAÇÃO / PRONTO PARA DEPLOY]`
+- **Próxima Leitura / Veredito:** Verificar se após o upload do firmware ambas as agendas respondem com `✅ Agenda X lida com sucesso!` sem nenhum registro de erro.
 
 ---
 

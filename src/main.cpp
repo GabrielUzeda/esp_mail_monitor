@@ -650,7 +650,7 @@ void imprimirStatusUso() {
 // ===================== Agenda (Google Calendar Bridge) =====================
 const char* AGENDA_URLS[] = {
   "https://script.google.com/macros/s/AKfycbzR-5Yr3pbeJVjGjmRxr7KTSMnLkNYoTxP-vcEoAgI7DNjmenB9_AiFdYyLWTHgRsia/exec",
-  "https://script.google.com/macros/s/AKfycbyslbFyCw84PUgO04_S6Aqa1xVfnvGUolBodNQ0TWBfUNuylJ8kWXB7ZeaIQxjVgcrl/exec"
+  "https://script.google.com/macros/s/AKfycbw_VnSF_84ivMpVZbIjBovteYcfP9opCyUAB6dyZ5ltfyzs0rFh7PxII4DDw50QsKde/exec"
 };
 const int QTD_AGENDAS = sizeof(AGENDA_URLS) / sizeof(AGENDA_URLS[0]);
 
