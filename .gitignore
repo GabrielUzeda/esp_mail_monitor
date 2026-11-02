@@ -12,6 +12,13 @@
 *.swo
 *~
 
+# Credentials & Secrets
+.env
+.env.*
+src/secrets.h
+src/secrets.h.backup
+AGENTS.md
+
 # Backups and Logs
 *.bak
 *.log
